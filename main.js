@@ -1,35 +1,107 @@
-const electron = require("electron");
-const app = electron.app;
-const BrowerWindow = electron.BrowserWindow;
-const path = require("path");
-const url = require("url");
+const { app, BrowserWindow, ipcMain } = require('electron');
+const path = require('path');
+const mysql = require('mysql2/promise');
+require('dotenv').config();
 
-let win;
+let connection; // Declare connection variable outside the function scope
 
-function createWindow(){
-    win = new BrowerWindow();
-    win.loadURL(url.format({
-        pathname: path.join(__dirname, 'index.html'),
-        protocol: 'file',
-        slashes: true
-    }));
-    
-    //win.webContents.
-    win.on('closed', ()=>{
-        win = null;
-    })
+function createWindow() {
+    const win = new BrowserWindow({
+        width: 800,
+        height: 600,
+        webPreferences: {
+            nodeIntegration: true,
+            preload: path.join(__dirname, 'Backend/preload.js')
+        }
+    });
+
+    win.loadFile('public/index.html');
 }
 
-app.on('ready', createWindow);
+app.whenReady().then(() => {
+    createWindow();
 
-app.on('window-all-closed',()=>{
-    if(process.platform!=='darwin'){
-        app.quit()
-    }
-})
+    app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
+        }
+    });
+});
 
-app.on('activate',()=>{
-    if(win=='null'){
-        createWindow()
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        app.quit();
     }
-})
+});
+
+async function connectToDB() { // Corrected function name and async keyword
+    try {
+        connection = await mysql.createConnection({ // Assign connection to the global variable
+            host: process.env.DB_HOST,
+            user: process.env.DB_USER,
+            password: process.env.DB_PASSWORD,
+            database: process.env.DB_DATABASE
+        });
+    } catch (error) { // Added error parameter
+        console.error('Error connecting to database:', error); // Corrected log message and added error parameter
+    }
+}
+
+// Call connectToDB function when app is ready
+app.whenReady().then(connectToDB);
+
+ipcMain.on('createCustomer', (event, data) => {
+    const { company_name, address, phone, gstin, pan, cin, poNo, total_price } = data;
+    connection.query('INSERT INTO customers (company_name, address, phone, gstin, pan, cin, pono, total_price) VALUES (?, ?, ?, ?, ?, ?, ?,?)', [company_name, address, phone, gstin, pan, cin, poNo, total_price], function (error) {
+        if (error) {
+            console.error(error);
+            event.reply('saveToDatabaseResult', { success: false, error: error.message });
+        } else {
+            console.log('Data saved successfully');
+            event.reply('saveToDatabaseResult', { success: true });
+        }
+    })
+});
+
+ipcMain.handle('fetchData', async (event) => {
+    try {
+        const [rows] = await connection.execute('SELECT * FROM customers');
+        return rows;
+    } catch (error) {
+        console.error('Error fetching data from database:', error);
+    }
+});
+
+ipcMain.on('insertmilestone', (event, data) => {
+    const { rowDataArray, poNo } = data;
+    console.log(rowDataArray, poNo);
+
+
+
+    // Use a counter to track the number of successful inserts
+    let successfulInserts = 0;
+
+    rowDataArray.forEach(function (rowData) {
+        console.log(rowData.milestone, rowData.claimPercentage, rowData.amount);
+        connection.query('INSERT INTO milestones (pono, milestonename, claim_percent, amount) VALUES (?, ?, ?, ?)', [poNo, rowData.milestone, rowData.claimPercentage, rowData.amount], function (error) {
+            if (error) {
+                console.error(error);
+                event.reply('saveToDatabaseResult', { success: false, error: error.message });
+            } else {
+                console.log('Data saved successfully');
+                successfulInserts++;
+                if (successfulInserts === rowDataArray.length) {
+                    // Reply with success message once all inserts are done
+                    event.reply('saveToDatabaseResult', { success: true });
+                }
+            }
+        });
+    });
+});
+
+// Close database connection when app is quit
+app.on('quit', () => {
+    if (connection) { // Check if connection exists before trying to end it
+        connection.end();
+    }
+});
